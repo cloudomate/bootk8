@@ -60,3 +60,47 @@ workers:
   - name: worker-3
     ip: 10.0.0.23
     mac: "52:54:00:aa:bb:13"
+
+# ─── Platform add-ons ─────────────────────────────────────────────
+# All add-ons are installed automatically after the cluster is ready.
+addons:
+
+  # Flannel CNI — pod networking (required for nodes to reach Ready)
+  flannel:
+    enabled: true
+    version: "v0.25.7"        # kube-flannel release tag
+
+  # MetalLB — bare metal LoadBalancer for Kubernetes services
+  # Nodes must be on the same L2 segment; ip_pool must not conflict with DHCP.
+  metallb:
+    enabled: true
+    version: "v0.14.9"
+    ip_pool: "10.0.0.200-10.0.0.250"   # IP range handed to LoadBalancer services
+
+  # Cert-Manager — automated TLS certificate management
+  cert_manager:
+    enabled: true
+    version: "v1.16.2"
+    # A self-signed ClusterIssuer is created automatically.
+    # Swap for ACME / Let's Encrypt by editing templates/addons/cert-manager-issuer.yaml.tmpl
+
+  # Rook-Ceph — distributed block & file storage for bare metal
+  # Each worker node needs at least one raw (unformatted) block device for OSD.
+  # The rbd kernel module is automatically loaded via Ignition on all nodes.
+  rook_ceph:
+    enabled: true
+    version: "v1.15.6"
+    # Device filter applied to worker nodes — matches all raw block devices by default.
+    # Set to e.g. "^sd[b-z]" to limit to specific disks.
+    osd_device_filter: "^sd[b-z]|^vd[b-z]|^nvme[0-9]n[0-9]"
+    replica_count: 3          # Ceph pool replica count (use 1 only for single-node testing)
+
+  # Nebraska — self-hosted Flatcar Container Linux update server
+  # Controls when and which OS version nodes upgrade to.
+  # Requires MetalLB (for the LoadBalancer IP) and Longhorn (for the PostgreSQL PVC).
+  nebraska:
+    enabled: true
+    version: "v2.8.14"
+    ip: "10.0.0.200"          # Fixed IP from the MetalLB ip_pool above
+    # Flatcar nodes are configured at boot to use this server for OS updates.
+    # Access the Nebraska UI at http://<ip>:8000 after cluster bootstrap.

@@ -1,0 +1,150 @@
+# Nebraska — self-hosted Flatcar Container Linux update server
+# Depends on: MetalLB (LoadBalancer IP), Rook-Ceph (PostgreSQL PVC)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nebraska
+---
+# ── PostgreSQL ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: nebraska
+type: Opaque
+stringData:
+  POSTGRES_DB:       nebraska
+  POSTGRES_USER:     nebraska
+  POSTGRES_PASSWORD: nebraska-secret   # Change before production use
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: nebraska
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: rook-ceph-block
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: nebraska
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "nebraska"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: nebraska
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# ── Nebraska server ───────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nebraska
+  namespace: nebraska
+  labels:
+    app: nebraska
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nebraska
+  template:
+    metadata:
+      labels:
+        app: nebraska
+    spec:
+      initContainers:
+        # Wait for PostgreSQL to accept connections before Nebraska starts
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres -U nebraska; do echo waiting for db; sleep 2; done
+      containers:
+        - name: nebraska
+          image: ghcr.io/flatcar/nebraska:${ADDON_NEBRASKA_VERSION}
+          args:
+            - -auth-mode=nologin
+            - -db-url=postgres://nebraska:nebraska-secret@postgres:5432/nebraska?sslmode=disable
+            - -http-static-dir=/nebraska/static
+            - -http-log
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+---
+# LoadBalancer service — MetalLB assigns the fixed IP from the pool
+apiVersion: v1
+kind: Service
+metadata:
+  name: nebraska
+  namespace: nebraska
+  annotations:
+    # Pin this service to a specific IP from the MetalLB pool
+    metallb.universe.tf/loadBalancerIPs: ${ADDON_NEBRASKA_IP}
+spec:
+  type: LoadBalancer
+  selector:
+    app: nebraska
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

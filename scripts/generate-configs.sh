@@ -27,8 +27,20 @@ FLATCAR_VERSION=$(echo "$CLUSTER_JSON"     | jq -r '.cluster.flatcar_version // 
 SSH_KEY=$(echo "$CLUSTER_JSON"             | jq -r '.cluster.ssh_authorized_key')
 KUBEADM_TOKEN="${KUBEADM_TOKEN:-$(generate-token.sh)}"
 
+# ─── Add-on configuration ─────────────────────────────────────────
+ADDON_NEBRASKA_ENABLED=$(echo "$CLUSTER_JSON" | jq -r '.addons.nebraska.enabled // "false"')
+ADDON_NEBRASKA_IP=$(echo "$CLUSTER_JSON"      | jq -r '.addons.nebraska.ip // ""')
+
+# Flatcar update server: point to Nebraska if enabled, else use public server
+if [[ "$ADDON_NEBRASKA_ENABLED" == "true" && -n "$ADDON_NEBRASKA_IP" ]]; then
+  FLATCAR_UPDATE_SERVER="http://${ADDON_NEBRASKA_IP}:8000/v1/update/"
+else
+  FLATCAR_UPDATE_SERVER="https://public.update.flatcar-linux.net/v1/update/"
+fi
+
 export BOOTSTRAP_IP CLUSTER_NAME CONTROL_PLANE_VIP POD_SUBNET \
-       SERVICE_SUBNET K8S_VERSION FLATCAR_VERSION SSH_KEY KUBEADM_TOKEN
+       SERVICE_SUBNET K8S_VERSION FLATCAR_VERSION SSH_KEY KUBEADM_TOKEN \
+       ADDON_NEBRASKA_ENABLED ADDON_NEBRASKA_IP FLATCAR_UPDATE_SERVER
 
 # ─── Matchbox profiles ────────────────────────────────────────────
 log "Generating Matchbox profiles..."
@@ -105,6 +117,8 @@ CONTROL_PLANE_VIP=${CONTROL_PLANE_VIP}
 K8S_VERSION=${K8S_VERSION}
 FLATCAR_VERSION=${FLATCAR_VERSION}
 CLUSTER_NAME=${CLUSTER_NAME}
+FLATCAR_UPDATE_SERVER=${FLATCAR_UPDATE_SERVER}
+ADDON_NEBRASKA_IP=${ADDON_NEBRASKA_IP}
 EOF
 
 log ""

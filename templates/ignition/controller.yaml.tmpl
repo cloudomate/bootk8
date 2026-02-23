@@ -89,6 +89,22 @@ storage:
               cgroup-driver: systemd
           controlPlane: {}
 
+    # ── RBD kernel module for Rook-Ceph storage ──────────────────
+    # Required on any node that mounts a Ceph RBD PersistentVolume.
+    - path: /etc/modules-load.d/rbd.conf
+      mode: 0644
+      contents:
+        inline: |
+          rbd
+
+    # ── Flatcar OS update server (Nebraska or public) ─────────────
+    - path: /etc/flatcar/update.conf
+      mode: 0644
+      contents:
+        inline: |
+          SERVER=${FLATCAR_UPDATE_SERVER}
+          GROUP=stable
+
 systemd:
   units:
     - name: swap.target

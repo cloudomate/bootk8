@@ -68,6 +68,22 @@ fi
 
 export KUBECONFIG="$KUBECONFIG_PATH"
 
+# ─── Phase 2.5: Install Flannel CNI ──────────────────────────────
+# Flannel must be running before kubelet can mark nodes as Ready.
+if [[ "${ADDON_FLANNEL_ENABLED:-true}" == "true" && -f "$KUBECONFIG_PATH" ]]; then
+  log ""
+  log "Phase 2.5: Installing Flannel CNI..."
+  FLANNEL_MANIFEST="/usr/local/share/addons/flannel.yaml"
+  if [[ -f "$FLANNEL_MANIFEST" ]]; then
+    # Patch the default 10.244.0.0/16 with the configured pod CIDR
+    sed "s|10.244.0.0/16|${POD_SUBNET:-10.244.0.0/16}|g" "$FLANNEL_MANIFEST" | \
+      kubectl apply -f -
+    log "✓ Flannel CNI installed (pod CIDR: ${POD_SUBNET:-10.244.0.0/16})"
+  else
+    log "⚠ Flannel manifest not found at $FLANNEL_MANIFEST — skipping CNI install"
+  fi
+fi
+
 # ─── Phase 3: Wait for all nodes to be Ready ─────────────────────
 log ""
 log "Phase 3: Waiting for all nodes to be Ready..."

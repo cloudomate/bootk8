@@ -1,0 +1,92 @@
+# Rook-Ceph cluster definition
+# The operator discovers OSDs on any block device matching osd_device_filter
+# on nodes labelled role=worker (applied automatically by kubeadm).
+---
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  cephVersion:
+    # Ceph image that matches the Rook operator version
+    image: quay.io/ceph/ceph:v18.2.4
+    allowUnsupported: false
+  dataDirHostPath: /var/lib/rook
+  skipUpgradeChecks: false
+  continueUpgradeAfterChecksEvenIfNotHealthy: false
+  mon:
+    count: 3
+    allowMultiplePerNode: false
+  mgr:
+    count: 2
+    modules:
+      - name: pg_autoscaler
+        enabled: true
+  dashboard:
+    enabled: true
+    ssl: false           # Terminate TLS at ingress; cert-manager handles certs
+  monitoring:
+    enabled: false
+  network:
+    provider: host       # Use host networking for best bare-metal performance
+  crashCollector:
+    disable: false
+  cleanupPolicy:
+    # Set confirmation: "yes-really-destroy-data" only to wipe the cluster
+    confirmation: ""
+  storage:
+    useAllNodes: false
+    # Only schedule OSDs on worker nodes
+    nodeFilter:
+      matchLabels:
+        node-role.kubernetes.io/worker: ""
+    useAllDevices: false
+    deviceFilter: ${ADDON_ROOK_CEPH_OSD_FILTER}
+    config:
+      # Use bluestore (default, best performance)
+      storeType: bluestore
+  # Tolerate nodes that are not yet fully initialised
+  placement:
+    all:
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
+  resources: {}   # Use cluster defaults; tune per-component if needed
+---
+# Toolbox deployment — gives access to the ceph CLI for diagnostics
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-tools
+  namespace: rook-ceph
+  labels:
+    app: rook-ceph-tools
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rook-ceph-tools
+  template:
+    metadata:
+      labels:
+        app: rook-ceph-tools
+    spec:
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: rook-ceph-tools
+          image: quay.io/ceph/ceph:v18.2.4
+          command: ["/bin/bash"]
+          args: ["-m", "-c", "source /tmp/ceph-init-env.sh; /usr/bin/ceph -s; while true; do sleep 3600; done"]
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: ceph-config
+            - mountPath: /etc/rook
+              name: mon-endpoint-volume
+      volumes:
+        - name: ceph-config
+          emptyDir: {}
+        - name: mon-endpoint-volume
+          configMap:
+            name: rook-ceph-mon-endpoints

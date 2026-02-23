@@ -27,6 +27,7 @@ COMMANDS:
   generate      Generate Ignition + Matchbox configs only (no servers)
   serve         Start Matchbox + dnsmasq (configs must already exist)
   wait          Wait for cluster to be ready (configs + kubeconfig must exist)
+  addons        Install platform add-ons (requires a running cluster + kubeconfig)
   validate      Validate cluster.yaml config
   teardown      Stop all bootstrap services
 
@@ -48,7 +49,7 @@ EOF
 COMMAND=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    init|generate|serve|wait|validate|teardown)
+    init|generate|serve|wait|addons|validate|teardown)
       COMMAND="$1"; shift ;;
     --config)
       CLUSTER_CONFIG="$2"; shift 2 ;;
@@ -82,6 +83,25 @@ load_config() {
     log "Generated kubeadm token: $KUBEADM_TOKEN"
   fi
   export KUBEADM_TOKEN
+
+  # ── Add-on configuration ─────────────────────────────────────────
+  local cfg
+  cfg=$(yq eval -o json "$CLUSTER_CONFIG")
+
+  export ADDON_FLANNEL_ENABLED=$(echo "$cfg"      | jq -r '.addons.flannel.enabled      // "true"')
+  export ADDON_FLANNEL_VERSION=$(echo "$cfg"       | jq -r '.addons.flannel.version      // "v0.25.7"')
+  export ADDON_METALLB_ENABLED=$(echo "$cfg"       | jq -r '.addons.metallb.enabled      // "false"')
+  export ADDON_METALLB_VERSION=$(echo "$cfg"       | jq -r '.addons.metallb.version      // "v0.14.9"')
+  export ADDON_METALLB_IP_POOL=$(echo "$cfg"       | jq -r '.addons.metallb.ip_pool      // ""')
+  export ADDON_CERT_MANAGER_ENABLED=$(echo "$cfg"  | jq -r '.addons.cert_manager.enabled // "false"')
+  export ADDON_CERT_MANAGER_VERSION=$(echo "$cfg"  | jq -r '.addons.cert_manager.version // "v1.16.2"')
+  export ADDON_ROOK_CEPH_ENABLED=$(echo "$cfg"        | jq -r '.addons.rook_ceph.enabled         // "false"')
+  export ADDON_ROOK_CEPH_VERSION=$(echo "$cfg"        | jq -r '.addons.rook_ceph.version         // "v1.15.6"')
+  export ADDON_ROOK_CEPH_REPLICA=$(echo "$cfg"        | jq -r '.addons.rook_ceph.replica_count   // "3"')
+  export ADDON_ROOK_CEPH_OSD_FILTER=$(echo "$cfg"     | jq -r '.addons.rook_ceph.osd_device_filter // "^sd[b-z]|^vd[b-z]|^nvme[0-9]n[0-9]"')
+  export ADDON_NEBRASKA_ENABLED=$(echo "$cfg"      | jq -r '.addons.nebraska.enabled     // "false"')
+  export ADDON_NEBRASKA_VERSION=$(echo "$cfg"      | jq -r '.addons.nebraska.version     // "v2.8.14"')
+  export ADDON_NEBRASKA_IP=$(echo "$cfg"           | jq -r '.addons.nebraska.ip          // ""')
 
   log "Cluster: $CLUSTER_NAME | VIP: $CONTROL_PLANE_VIP | K8s: $K8S_VERSION | Flatcar: $FLATCAR_VERSION"
 }
@@ -129,6 +149,12 @@ cmd_wait() {
   wait-for-cluster.sh "$CONTROL_PLANE_VIP"
 }
 
+cmd_addons() {
+  load_config
+  log "Installing platform add-ons..."
+  install-addons.sh
+}
+
 cmd_teardown() {
   log "Stopping bootstrap services..."
   pkill matchbox  2>/dev/null || true
@@ -169,8 +195,11 @@ cmd_init() {
   log ""
   log "Waiting for cluster to become healthy..."
 
-  # Wait for cluster (polls API server)
+  # Wait for cluster (polls API server, installs Flannel CNI, waits for Ready)
   wait-for-cluster.sh "$CONTROL_PLANE_VIP"
+
+  # Install platform add-ons (cert-manager, MetalLB, Longhorn, Nebraska)
+  install-addons.sh
 
   log ""
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -191,6 +220,7 @@ case "$COMMAND" in
   generate) cmd_generate ;;
   serve)    load_config; cmd_serve ;;
   wait)     cmd_wait ;;
+  addons)   cmd_addons ;;
   validate) cmd_validate ;;
   teardown) cmd_teardown ;;
 esac

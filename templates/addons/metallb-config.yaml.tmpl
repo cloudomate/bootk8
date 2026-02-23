@@ -1,0 +1,21 @@
+# MetalLB L2 configuration
+# Applied after the metallb-native.yaml manifest and CRD establishment.
+# ADDON_METALLB_IP_POOL — range or CIDR, e.g. "10.0.0.200-10.0.0.250" or "10.0.0.200/28"
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: hci-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - ${ADDON_METALLB_IP_POOL}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: hci-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - hci-pool
