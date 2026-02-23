@@ -1,0 +1,12 @@
+<!--
+  libvirt isolated bridge network for PXE boot testing.
+  No built-in DHCP — the bootstrap container's dnsmasq handles that.
+  All VMs on this network share the same L2 segment, simulating a real rack.
+-->
+<network>
+  <name>pxe-net</name>
+  <bridge name="virbr-pxe" stp="off" delay="0"/>
+  <!-- Static IP for the host-side of the bridge (bootstrap node endpoint) -->
+  <ip address="10.0.0.1" netmask="255.255.255.0"/>
+  <!-- No <dhcp> block — bootstrap container owns DHCP -->
+</network>

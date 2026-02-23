@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────
+# Dockerfile.sysext
+# Packages custom K8s binaries as a Flatcar system extension (sysext)
+#
+# A sysext is a FROM scratch OCI image with a specific directory layout:
+#   usr/bin/          ← binaries merged into /usr/bin at boot
+#   usr/lib/
+#     extension-release.d/
+#       extension-release.kubernetes  ← metadata file required by systemd-sysext
+#
+# Activated on nodes via: systemd-sysext refresh
+# ─────────────────────────────────────────────────────────────────
+
+FROM scratch
+
+ARG DISTRO_VERSION=hci-v1.31.0-1
+
+# K8s binaries — built by `make build-binaries` and placed in ./sysext/
+# The sysext/ directory is pre-populated by the Makefile before this build runs
+COPY sysext/usr/ /usr/
+
+# Verify the expected layout (will fail build if binaries are missing)
+# Note: we can't run shell commands in FROM scratch, so validation
+# happens in the Makefile's build-sysext target before docker build.
+
+LABEL org.opencontainers.image.title="bootstrap-hci K8s sysext"
+LABEL org.opencontainers.image.description="Custom Kubernetes binaries packaged as a Flatcar system extension"
+LABEL org.opencontainers.image.version="${DISTRO_VERSION}"
+LABEL io.flatcar.sysext.level="1"

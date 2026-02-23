@@ -1,0 +1,196 @@
+variant: flatcar
+version: 1.0.0
+
+# ─────────────────────────────────────────────────────────────────
+# Bootstrap Node Ignition Config
+# Used when the bootstrap node itself PXE boots from Flatcar.
+# This node runs Matchbox + dnsmasq as containers, serves configs
+# to other nodes, then tears itself down once the cluster is healthy.
+# ─────────────────────────────────────────────────────────────────
+
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ${SSH_KEY}
+      groups:
+        - sudo
+        - docker
+
+storage:
+  files:
+    # ── Kernel modules ────────────────────────────────────────────
+    - path: /etc/modules-load.d/overlay.conf
+      mode: 0644
+      contents:
+        inline: |
+          overlay
+          br_netfilter
+
+    # ── Docker daemon config ──────────────────────────────────────
+    - path: /etc/docker/daemon.json
+      mode: 0644
+      contents:
+        inline: |
+          {
+            "log-driver": "journald",
+            "storage-driver": "overlay2"
+          }
+
+    # ── dnsmasq config (rendered from template values) ────────────
+    - path: /etc/matchbox/dnsmasq.conf
+      mode: 0644
+      contents:
+        inline: |
+          port=0
+          dhcp-range=${BOOTSTRAP_IP},proxy
+          enable-tftp
+          tftp-root=/var/lib/tftpboot
+          dhcp-boot=undionly.kpxe,,${BOOTSTRAP_IP}
+          dhcp-match=set:ipxe,175
+          dhcp-boot=tag:ipxe,http://${BOOTSTRAP_IP}:8080/boot.ipxe
+          log-dhcp
+
+    # ── Matchbox data directory structure ─────────────────────────
+    - path: /etc/matchbox/.keep
+      mode: 0644
+      contents:
+        inline: ""
+
+    # ── Bootstrap info for scripts ────────────────────────────────
+    - path: /etc/bootstrap/cluster.env
+      mode: 0600
+      contents:
+        inline: |
+          BOOTSTRAP_IP=${BOOTSTRAP_IP}
+          CLUSTER_NAME=${CLUSTER_NAME}
+          CONTROL_PLANE_VIP=${CONTROL_PLANE_VIP}
+          K8S_VERSION=${K8S_VERSION}
+          FLATCAR_VERSION=${FLATCAR_VERSION}
+          POD_SUBNET=${POD_SUBNET}
+          SERVICE_SUBNET=${SERVICE_SUBNET}
+          KUBEADM_TOKEN=${KUBEADM_TOKEN}
+
+    # ── Teardown script ───────────────────────────────────────────
+    - path: /opt/bootstrap/teardown.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          # Stops bootstrap services once cluster is healthy
+          set -euo pipefail
+          source /etc/bootstrap/cluster.env
+
+          echo "[teardown] Waiting for all nodes to be Ready..."
+          KUBECONFIG=/etc/kubernetes/admin.conf
+
+          until kubectl --kubeconfig=$KUBECONFIG get nodes \
+              --no-headers 2>/dev/null | grep -v "NotReady" | \
+              grep -c "Ready" | grep -qv "^0$"; do
+            echo "[teardown] Nodes not ready yet, sleeping 15s..."
+            sleep 15
+          done
+
+          echo "[teardown] Cluster is healthy. Stopping bootstrap services."
+          systemctl stop matchbox.service dnsmasq-pxe.service
+          echo "[teardown] Done. Bootstrap node can now be powered off."
+
+systemd:
+  units:
+    # ── Enable Docker ─────────────────────────────────────────────
+    - name: docker.service
+      enabled: true
+
+    # ── Download iPXE bootloader ──────────────────────────────────
+    - name: get-ipxe.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Download iPXE undionly.kpxe bootloader
+        After=network-online.target
+        Wants=network-online.target
+        ConditionPathExists=!/var/lib/tftpboot/undionly.kpxe
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/bin/bash -c '\
+          mkdir -p /var/lib/tftpboot && \
+          curl -fsSLo /var/lib/tftpboot/undionly.kpxe \
+            http://boot.ipxe.org/undionly.kpxe'
+
+        [Install]
+        WantedBy=multi-user.target
+
+    # ── Matchbox (PXE + Ignition config server) ───────────────────
+    - name: matchbox.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Matchbox — PXE and Ignition config server
+        After=docker.service network-online.target
+        Requires=docker.service
+        Wants=network-online.target
+
+        [Service]
+        EnvironmentFile=/etc/bootstrap/cluster.env
+        ExecStartPre=-/usr/bin/docker rm -f matchbox
+        ExecStart=/usr/bin/docker run --rm \
+          --name matchbox \
+          --net=host \
+          -v /etc/matchbox:/var/lib/matchbox:z \
+          quay.io/coreos/matchbox:latest \
+          -address=0.0.0.0:8080 \
+          -assets-path=/var/lib/matchbox/assets \
+          -data-path=/var/lib/matchbox \
+          -log-level=info
+        ExecStop=/usr/bin/docker stop matchbox
+        Restart=on-failure
+        RestartSec=10
+
+        [Install]
+        WantedBy=multi-user.target
+
+    # ── dnsmasq (DHCP proxy + TFTP + PXE) ────────────────────────
+    - name: dnsmasq-pxe.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=dnsmasq — DHCP proxy and PXE boot server
+        After=docker.service network-online.target get-ipxe.service
+        Requires=docker.service
+        Wants=network-online.target
+
+        [Service]
+        ExecStartPre=-/usr/bin/docker rm -f dnsmasq-pxe
+        ExecStart=/usr/bin/docker run --rm \
+          --name dnsmasq-pxe \
+          --net=host \
+          --cap-add=NET_ADMIN \
+          -v /etc/matchbox/dnsmasq.conf:/etc/dnsmasq.conf:ro \
+          -v /var/lib/tftpboot:/var/lib/tftpboot:ro \
+          andyshinn/dnsmasq:latest \
+          --no-daemon
+        ExecStop=/usr/bin/docker stop dnsmasq-pxe
+        Restart=on-failure
+        RestartSec=10
+
+        [Install]
+        WantedBy=multi-user.target
+
+    # ── Bootstrap teardown watcher ────────────────────────────────
+    - name: bootstrap-teardown.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Monitor cluster health and tear down bootstrap node
+        After=matchbox.service dnsmasq-pxe.service
+        Wants=matchbox.service dnsmasq-pxe.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/opt/bootstrap/teardown.sh
+
+        [Install]
+        WantedBy=multi-user.target

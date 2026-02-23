@@ -1,0 +1,10 @@
+# Build artifacts
+bin/
+sysext/
+output/
+
+# Cluster config (contains secrets)
+cluster.yaml
+
+# macOS
+.DS_Store

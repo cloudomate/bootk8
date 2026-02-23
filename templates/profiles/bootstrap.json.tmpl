@@ -1,0 +1,16 @@
+{
+  "id": "bootstrap",
+  "name": "Flatcar Bootstrap Node",
+  "boot": {
+    "kernel": "/assets/flatcar/${FLATCAR_VERSION}/flatcar_production_pxe.vmlinuz",
+    "initrd": ["/assets/flatcar/${FLATCAR_VERSION}/flatcar_production_pxe_image.cpio.gz"],
+    "args": [
+      "flatcar.first_boot=1",
+      "ignition.config.url=http://${BOOTSTRAP_IP}:8080/ignition?uuid=$${uuid}&mac=$${mac:hexhyph}",
+      "console=tty0",
+      "console=ttyS0",
+      "net.ifnames=0"
+    ]
+  },
+  "ignition_id": "bootstrap.json"
+}

@@ -1,0 +1,56 @@
+version: "3.8"
+
+# ─────────────────────────────────────────────────────────────────
+# Bootstrap Node — Docker Compose
+# For development and testing. Production: use `docker run` directly.
+# ─────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Full bootstrap (generate + serve + wait) ──────────────────
+  bootstrap:
+    image: your-distro/bootstrap:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: init
+    network_mode: host          # Required: needs raw network for PXE/DHCP
+    privileged: true            # Required: dnsmasq needs NET_ADMIN
+    environment:
+      - CLUSTER_CONFIG=/config/cluster.yaml
+      - OUTPUT_DIR=/output
+    volumes:
+      - ./cluster.yaml:/config/cluster.yaml:ro
+      - ./output:/output
+    restart: "no"
+
+  # ── Config generation only (no servers started) ───────────────
+  generate:
+    image: your-distro/bootstrap:latest
+    command: generate
+    environment:
+      - CLUSTER_CONFIG=/config/cluster.yaml
+      - OUTPUT_DIR=/output
+    volumes:
+      - ./cluster.yaml:/config/cluster.yaml:ro
+      - ./output:/output
+      - matchbox-data:/var/lib/matchbox
+    profiles:
+      - tools
+
+  # ── Matchbox server only (configs must already exist) ─────────
+  matchbox:
+    image: your-distro/bootstrap:latest
+    command: serve
+    network_mode: host
+    privileged: true
+    environment:
+      - CLUSTER_CONFIG=/config/cluster.yaml
+    volumes:
+      - ./cluster.yaml:/config/cluster.yaml:ro
+      - matchbox-data:/var/lib/matchbox
+    profiles:
+      - serve
+
+volumes:
+  matchbox-data:

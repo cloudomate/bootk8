@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────
+# cluster.yaml — Bootstrap node cluster configuration
+# Copy to cluster.yaml and fill in your values before running.
+# ─────────────────────────────────────────────────────────────────
+
+cluster:
+  name: my-k8s-cluster
+
+  # Virtual IP / load balancer IP for the control plane (HA)
+  # If single control plane, use the controller-1 IP directly
+  control_plane_vip: 10.0.0.10
+
+  # Kubernetes and Flatcar versions
+  k8s_version: v1.31.0
+  flatcar_version: "3975.2.2"
+
+  # Pod and service CIDRs (must not overlap with node network)
+  pod_subnet: 10.244.0.0/16
+  service_subnet: 10.96.0.0/12
+
+  # SSH public key for the 'core' user on all nodes
+  ssh_authorized_key: "ssh-ed25519 AAAA... your-public-key-here"
+
+  # kubeadm bootstrap token (leave empty to auto-generate)
+  # Format: [a-z0-9]{6}.[a-z0-9]{16}
+  kubeadm_token: ""
+
+# ─── Bootstrap node ───────────────────────────────────────────────
+# The machine running this container image
+bootstrap:
+  ip: 10.0.0.5
+  mac: "52:54:00:aa:bb:00"    # MAC address of the bootstrap node NIC
+
+# ─── Control plane nodes ─────────────────────────────────────────
+# 1 node = single control plane
+# 3 nodes = HA (recommended for production)
+controllers:
+  - name: controller-1
+    ip: 10.0.0.11
+    mac: "52:54:00:aa:bb:01"
+
+  - name: controller-2
+    ip: 10.0.0.12
+    mac: "52:54:00:aa:bb:02"
+
+  - name: controller-3
+    ip: 10.0.0.13
+    mac: "52:54:00:aa:bb:03"
+
+# ─── Worker nodes ─────────────────────────────────────────────────
+workers:
+  - name: worker-1
+    ip: 10.0.0.21
+    mac: "52:54:00:aa:bb:11"
+
+  - name: worker-2
+    ip: 10.0.0.22
+    mac: "52:54:00:aa:bb:12"
+
+  - name: worker-3
+    ip: 10.0.0.23
+    mac: "52:54:00:aa:bb:13"
