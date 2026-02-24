@@ -60,18 +60,7 @@ RUN mkdir -p /flatcar-assets/${FLATCAR_VERSION} && \
         ${BASE}/flatcar_production_pxe_image.cpio.gz
 
 # ─────────────────────────────────────────────
-# Stage 2: UI builder
-# ─────────────────────────────────────────────
-FROM node:20-alpine AS ui-builder
-
-WORKDIR /ui
-COPY ui/package.json ./
-RUN npm install
-COPY ui/ ./
-RUN npm run build
-
-# ─────────────────────────────────────────────
-# Stage 3: Final image
+# Stage 2: Final image
 # ─────────────────────────────────────────────
 FROM alpine:3.19
 
@@ -93,8 +82,7 @@ RUN apk add --no-cache \
     iproute2 \
     iputils \
     openssl \
-    tftp-hpa \
-    nginx
+    tftp-hpa
 
 # Copy tools from downloader stage
 COPY --from=downloader /usr/local/bin/matchbox  /usr/local/bin/matchbox
@@ -119,15 +107,11 @@ RUN mkdir -p /var/lib/tftpboot && \
 # Matchbox data directory
 RUN mkdir -p /var/lib/matchbox/{profiles,groups,ignition}
 
-# Copy UI
-COPY --from=ui-builder /ui/dist /usr/share/nginx/html
-COPY ui/nginx.conf /etc/nginx/http.d/default.conf
-
 # Make all scripts executable
 RUN chmod +x /usr/local/bin/*.sh
 
 VOLUME ["/config"]
-EXPOSE 8080 3000
+EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["--help"]
