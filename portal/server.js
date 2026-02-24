@@ -245,12 +245,17 @@ app.post('/api/bootstrap/start', (req, res) => {
       })
     }
 
-    // Remove any stale container
+    // Remove any stale container and wait for Docker to fully release the name
     try {
       const old  = docker.getContainer(CONTAINER_NAME)
       const info = await old.inspect()
       if (info.State.Running) await old.stop({ t: 5 })
       await old.remove({ force: true })
+      // Poll until inspect() throws 404 — createContainer races otherwise (409)
+      for (let i = 0; i < 20; i++) {
+        try { await old.inspect() } catch { break }  // 404 = fully gone
+        await new Promise(r => setTimeout(r, 300))
+      }
     } catch (e) {
       // 404 = container doesn't exist — that's fine
       if (e.statusCode !== 404) {
@@ -290,6 +295,19 @@ app.post('/api/bootstrap/start', (req, res) => {
         },
       })
       await container.start()
+
+      // Forward bootstrap container logs to portal stdout so they appear in `docker compose logs`
+      container.logs({ stdout: true, stderr: true, follow: true }, (err, stream) => {
+        if (err || !stream) return
+        docker.modem.demuxStream(
+          stream,
+          { write: chunk => process.stdout.write(`[bootstrap] ${chunk}`) },
+          { write: chunk => process.stderr.write(`[bootstrap] ${chunk}`) }
+        )
+        stream.on('error', () => {})
+        stream.on('end', () => console.log('[bootstrap] container finished'))
+      })
+
       res.json({ ok: true, containerId: container.id })
     } catch (e) {
       res.status(500).json({ error: e.message })

@@ -24,14 +24,16 @@ POD_SUBNET=$(echo "$CLUSTER_JSON"          | jq -r '.cluster.pod_subnet // "10.2
 SERVICE_SUBNET=$(echo "$CLUSTER_JSON"      | jq -r '.cluster.service_subnet // "10.96.0.0/12"')
 K8S_VERSION=$(echo "$CLUSTER_JSON"         | jq -r '.cluster.k8s_version // "v1.31.0"')
 FLATCAR_VERSION=$(echo "$CLUSTER_JSON"     | jq -r '.cluster.flatcar_version // env.FLATCAR_VERSION')
-# Support both ssh_authorized_keys (list) and ssh_authorized_key (singular, legacy)
-SSH_KEYS_YAML=$(echo "$CLUSTER_JSON" | jq -r '
+# Support both ssh_authorized_keys (list) and ssh_authorized_key (singular, legacy).
+# Use single-quoted YAML scalars so backslashes in key comments are literal (not escape chars).
+# --arg q "'" injects the quote character without embedding it in the bash single-quoted string.
+SSH_KEYS_YAML=$(echo "$CLUSTER_JSON" | jq -r --arg q "'" '
   (if (.cluster.ssh_authorized_keys | type) == "array" then
     .cluster.ssh_authorized_keys
   elif (.cluster.ssh_authorized_key // "") != "" then
     [.cluster.ssh_authorized_key]
   else [] end) |
-  .[] | "        - \"\(.)\"" ')
+  .[] | ("        - " + $q + . + $q)')
 KUBEADM_TOKEN="${KUBEADM_TOKEN:-$(generate-token.sh)}"
 
 # ─── Add-on configuration ─────────────────────────────────────────
