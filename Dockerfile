@@ -121,7 +121,7 @@ RUN mkdir -p /var/lib/matchbox/{profiles,groups,ignition}
 
 # Copy UI
 COPY --from=ui-builder /ui/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/http.d/default.conf
+COPY ui/nginx.conf /etc/nginx/http.d/default.conf
 
 # Make all scripts executable
 RUN chmod +x /usr/local/bin/*.sh
