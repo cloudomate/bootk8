@@ -12,6 +12,7 @@ POLL_INTERVAL=15
 TIMEOUT=1800  # 30 minutes max
 
 log() { echo "[wait] $*"; }
+_status() { write-status.sh "$@" 2>/dev/null || true; }
 
 [[ -z "$CONTROL_PLANE_VIP" ]] && {
   echo "Usage: wait-for-cluster.sh <CONTROL_PLANE_VIP>"
@@ -30,6 +31,7 @@ log "Phase 1: Waiting for API server to come up..."
 until curl -sk --max-time 5 "${API_ENDPOINT}/healthz" | grep -q "ok"; do
   ELAPSED=$(( $(date +%s) - START_TIME ))
   if [[ $ELAPSED -gt $TIMEOUT ]]; then
+    _status phase "error" "Timed out waiting for API server after ${ELAPSED}s"
     log "ERROR: Timed out waiting for API server after ${ELAPSED}s"
     exit 1
   fi
@@ -37,6 +39,13 @@ until curl -sk --max-time 5 "${API_ENDPOINT}/healthz" | grep -q "ok"; do
   sleep $POLL_INTERVAL
 done
 log "✓ API server is up"
+
+# Mark all controllers as installing (API is up, kubeadm running)
+if [[ -f "${CLUSTER_CONFIG:-/config/cluster.yaml}" ]]; then
+  while IFS= read -r name; do
+    _status node "$name" "installing" "API server up, kubeadm running"
+  done < <(yq eval '.controllers[].name' "${CLUSTER_CONFIG:-/config/cluster.yaml}" 2>/dev/null || true)
+fi
 
 # ─── Phase 2: Copy kubeconfig from control plane ─────────────────
 log ""
@@ -46,7 +55,6 @@ CONTROLLER_1_IP=$(jq -r '.controllers[0].ip' <(yq eval -o json "${CLUSTER_CONFIG
 
 if [[ -n "$CONTROLLER_1_IP" ]]; then
   mkdir -p "$OUTPUT_DIR"
-  # Try to copy kubeconfig via SSH (key must be available)
   for attempt in $(seq 1 10); do
     if ssh -o StrictHostKeyChecking=no \
            -o ConnectTimeout=10 \
@@ -54,7 +62,6 @@ if [[ -n "$CONTROLLER_1_IP" ]]; then
            "sudo cat /etc/kubernetes/admin.conf" \
            > "$KUBECONFIG_PATH" 2>/dev/null; then
 
-      # Replace internal IP with VIP for external access
       sed -i "s|server: https://.*:6443|server: ${API_ENDPOINT}|" "$KUBECONFIG_PATH"
       log "✓ Kubeconfig saved to: $KUBECONFIG_PATH"
       break
@@ -69,18 +76,19 @@ fi
 export KUBECONFIG="$KUBECONFIG_PATH"
 
 # ─── Phase 2.5: Install Flannel CNI ──────────────────────────────
-# Flannel must be running before kubelet can mark nodes as Ready.
 if [[ "${ADDON_FLANNEL_ENABLED:-true}" == "true" && -f "$KUBECONFIG_PATH" ]]; then
   log ""
   log "Phase 2.5: Installing Flannel CNI..."
+  _status addon "flannel" "deploying" "Installing Flannel CNI..."
   FLANNEL_MANIFEST="/usr/local/share/addons/flannel.yaml"
   if [[ -f "$FLANNEL_MANIFEST" ]]; then
-    # Patch the default 10.244.0.0/16 with the configured pod CIDR
     sed "s|10.244.0.0/16|${POD_SUBNET:-10.244.0.0/16}|g" "$FLANNEL_MANIFEST" | \
       kubectl apply -f -
+    _status addon "flannel" "ready" "Flannel CNI installed"
     log "✓ Flannel CNI installed (pod CIDR: ${POD_SUBNET:-10.244.0.0/16})"
   else
     log "⚠ Flannel manifest not found at $FLANNEL_MANIFEST — skipping CNI install"
+    _status addon "flannel" "error" "Manifest not found"
   fi
 fi
 
@@ -95,17 +103,36 @@ EXPECTED_NODES=$((
 
 log "Expecting $EXPECTED_NODES nodes total"
 
+# Track which nodes we've already marked ready
+declare -A MARKED_READY
+
 until [[ "$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")" -ge "$EXPECTED_NODES" ]]; do
   ELAPSED=$(( $(date +%s) - START_TIME ))
   if [[ $ELAPSED -gt $TIMEOUT ]]; then
+    _status phase "error" "Timed out waiting for nodes after ${ELAPSED}s"
     log "ERROR: Timed out waiting for nodes. Current state:"
     kubectl get nodes 2>/dev/null || true
     exit 1
   fi
+
   READY=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready" || echo 0)
   log "  $READY/$EXPECTED_NODES nodes Ready... (${ELAPSED}s elapsed)"
+
+  # Update status for any newly-ready nodes
+  while IFS= read -r name; do
+    if [[ -z "${MARKED_READY[$name]:-}" ]]; then
+      _status node "$name" "ready" "Node is Ready"
+      MARKED_READY[$name]=1
+    fi
+  done < <(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready" {print $1}' || true)
+
   sleep $POLL_INTERVAL
 done
+
+# Mark any remaining nodes as ready
+while IFS= read -r name; do
+  _status node "$name" "ready" "Node is Ready"
+done < <(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready" {print $1}' || true)
 
 log ""
 log "✓ All $EXPECTED_NODES nodes are Ready!"

@@ -4,9 +4,19 @@
 # Disable DNS server
 port=0
 
-# DHCP proxy — does NOT assign IPs, just adds PXE boot options
-# Operates on the provisioning network subnet
-dhcp-range=${BOOTSTRAP_IP},proxy
+# Restrict to the bootstrap interface only — prevents conflicts with
+# Docker, libvirt, or other dnsmasq instances on the same host.
+interface=${BOOTSTRAP_IFACE}
+
+# DHCP mode (set by generate-configs.sh):
+#   Proxy mode  (real hardware): dhcp-range=<BOOTSTRAP_IP>,proxy
+#               Only adds PXE boot options; existing DHCP server assigns IPs.
+#   Full mode   (KVM lab):       dhcp-range=<start>,<end>,<mask>,<lease>
+#               Acts as the sole DHCP server; assigns IPs from the range.
+dhcp-range=${DNSMASQ_DHCP_RANGE}
+
+# Static MAC→IP host reservations (full DHCP mode only, empty in proxy mode)
+${DNSMASQ_DHCP_HOSTS}
 
 # TFTP root for PXE bootloader delivery
 enable-tftp

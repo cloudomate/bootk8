@@ -3,6 +3,7 @@
 # ─────────────────────────────────────────────
 FROM alpine:3.19 AS downloader
 
+ARG TARGETARCH
 ARG MATCHBOX_VERSION=0.10.0
 ARG BUTANE_VERSION=0.20.0
 ARG KUBECTL_VERSION=v1.31.0
@@ -18,21 +19,22 @@ RUN apk add --no-cache curl
 
 WORKDIR /downloads
 
-# Matchbox
+# Matchbox — arch-specific binary (runs on the bootstrap container)
 RUN curl -fsSLo matchbox.tar.gz \
-    https://github.com/poseidon/matchbox/releases/download/v${MATCHBOX_VERSION}/matchbox-v${MATCHBOX_VERSION}-linux-amd64.tar.gz && \
+        https://github.com/poseidon/matchbox/releases/download/v${MATCHBOX_VERSION}/matchbox-v${MATCHBOX_VERSION}-linux-${TARGETARCH}.tar.gz && \
     tar -xzf matchbox.tar.gz && \
-    mv matchbox-v${MATCHBOX_VERSION}-linux-amd64/matchbox /usr/local/bin/matchbox && \
+    mv matchbox-v${MATCHBOX_VERSION}-linux-${TARGETARCH}/matchbox /usr/local/bin/matchbox && \
     chmod +x /usr/local/bin/matchbox
 
-# Butane (Ignition config transpiler)
-RUN curl -fsSLo /usr/local/bin/butane \
-    https://github.com/coreos/butane/releases/download/v${BUTANE_VERSION}/butane-x86_64-unknown-linux-gnu && \
+# Butane (Ignition config transpiler) — uses Rust target naming (x86_64 / aarch64)
+RUN BUTANE_ARCH=$([ "${TARGETARCH}" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
+    curl -fsSLo /usr/local/bin/butane \
+        https://github.com/coreos/butane/releases/download/v${BUTANE_VERSION}/butane-${BUTANE_ARCH}-unknown-linux-gnu && \
     chmod +x /usr/local/bin/butane
 
-# kubectl (for cluster health checks)
+# kubectl (for cluster health checks + addon deployment) — arch-specific
 RUN curl -fsSLo /usr/local/bin/kubectl \
-    https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl && \
+        https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl && \
     chmod +x /usr/local/bin/kubectl
 
 # Add-on manifests (bundled so the image works air-gap / offline)
@@ -48,7 +50,8 @@ RUN mkdir -p /addons && \
     curl -fsSLo /addons/rook-ceph-common.yaml  ${ROOK_BASE}/common.yaml && \
     curl -fsSLo /addons/rook-ceph-operator.yaml ${ROOK_BASE}/operator.yaml
 
-# Flatcar PXE assets
+# Flatcar PXE assets — ALWAYS amd64-usr: these are served to x86_64 nodes
+# over HTTP/TFTP, not executed inside the container.
 RUN mkdir -p /flatcar-assets/${FLATCAR_VERSION} && \
     BASE=https://stable.release.flatcar-linux.net/amd64-usr/${FLATCAR_VERSION} && \
     curl -fsSLo /flatcar-assets/${FLATCAR_VERSION}/flatcar_production_pxe.vmlinuz \
@@ -57,7 +60,18 @@ RUN mkdir -p /flatcar-assets/${FLATCAR_VERSION} && \
         ${BASE}/flatcar_production_pxe_image.cpio.gz
 
 # ─────────────────────────────────────────────
-# Stage 2: Final image
+# Stage 2: UI builder
+# ─────────────────────────────────────────────
+FROM node:20-alpine AS ui-builder
+
+WORKDIR /ui
+COPY ui/package.json ./
+RUN npm install
+COPY ui/ ./
+RUN npm run build
+
+# ─────────────────────────────────────────────
+# Stage 3: Final image
 # ─────────────────────────────────────────────
 FROM alpine:3.19
 
@@ -79,7 +93,8 @@ RUN apk add --no-cache \
     iproute2 \
     iputils \
     openssl \
-    tftp-hpa
+    tftp-hpa \
+    nginx
 
 # Copy tools from downloader stage
 COPY --from=downloader /usr/local/bin/matchbox  /usr/local/bin/matchbox
@@ -96,7 +111,7 @@ COPY --from=downloader /addons /usr/local/share/addons
 COPY scripts/     /usr/local/bin/
 COPY templates/   /templates/
 
-# iPXE bootloader for TFTP
+# iPXE bootloader for TFTP — x86_64 clients only (served, not executed)
 RUN mkdir -p /var/lib/tftpboot && \
     curl -fsSLo /var/lib/tftpboot/undionly.kpxe \
         http://boot.ipxe.org/undionly.kpxe
@@ -104,11 +119,15 @@ RUN mkdir -p /var/lib/tftpboot && \
 # Matchbox data directory
 RUN mkdir -p /var/lib/matchbox/{profiles,groups,ignition}
 
+# Copy UI
+COPY --from=ui-builder /ui/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/http.d/default.conf
+
 # Make all scripts executable
 RUN chmod +x /usr/local/bin/*.sh
 
 VOLUME ["/config"]
-EXPOSE 8080
+EXPOSE 8080 3000
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["--help"]

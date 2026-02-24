@@ -1,56 +1,40 @@
 version: "3.8"
 
 # ─────────────────────────────────────────────────────────────────
-# Bootstrap Node — Docker Compose
-# For development and testing. Production: use `docker run` directly.
+# bootstrap-hci Management Portal
+#
+# Usage:
+#   docker compose up -d
+#   open http://localhost:3000
+#
+# Put your CMP manifests in ./cmp/ before clicking "Deploy CMP".
+# The portal manages the bootstrap container lifecycle via Docker socket.
 # ─────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── Full bootstrap (generate + serve + wait) ──────────────────
-  bootstrap:
-    image: your-distro/bootstrap:latest
+  portal:
+    image: cr.imys.in/hci/portal:latest
     build:
       context: .
-      dockerfile: Dockerfile
-    command: init
-    network_mode: host          # Required: needs raw network for PXE/DHCP
-    privileged: true            # Required: dnsmasq needs NET_ADMIN
+      dockerfile: Dockerfile.portal
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker socket to manage bootstrap container
+      - hci-output:/output                           # Shared with bootstrap container (status, kubeconfig)
+      - hci-config:/config                           # Shared with bootstrap container (cluster.yaml)
+      - ./cmp:/cmp:ro                                # Your CMP manifests
     environment:
-      - CLUSTER_CONFIG=/config/cluster.yaml
+      - BOOTSTRAP_IMAGE=cr.imys.in/hci/bootk8:latest
+      - OUTPUT_VOLUME=hci-output
+      - CONFIG_VOLUME=hci-config
       - OUTPUT_DIR=/output
-    volumes:
-      - ./cluster.yaml:/config/cluster.yaml:ro
-      - ./output:/output
-    restart: "no"
-
-  # ── Config generation only (no servers started) ───────────────
-  generate:
-    image: your-distro/bootstrap:latest
-    command: generate
-    environment:
-      - CLUSTER_CONFIG=/config/cluster.yaml
-      - OUTPUT_DIR=/output
-    volumes:
-      - ./cluster.yaml:/config/cluster.yaml:ro
-      - ./output:/output
-      - matchbox-data:/var/lib/matchbox
-    profiles:
-      - tools
-
-  # ── Matchbox server only (configs must already exist) ─────────
-  matchbox:
-    image: your-distro/bootstrap:latest
-    command: serve
-    network_mode: host
-    privileged: true
-    environment:
-      - CLUSTER_CONFIG=/config/cluster.yaml
-    volumes:
-      - ./cluster.yaml:/config/cluster.yaml:ro
-      - matchbox-data:/var/lib/matchbox
-    profiles:
-      - serve
+      - CONFIG_DIR=/config
+    restart: unless-stopped
 
 volumes:
-  matchbox-data:
+  hci-output:
+    name: hci-output   # pin exact name so the bootstrap container (launched via Docker API) uses the same volume
+  hci-config:
+    name: hci-config   # without 'name:', compose would prefix the project name (e.g. hci_hci-config)

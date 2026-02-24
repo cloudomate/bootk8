@@ -12,6 +12,12 @@ log()  { echo "${LOG_PREFIX} $*"; }
 err()  { echo "${LOG_PREFIX} ERROR: $*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# Status helper — writes /output/status.json for the management portal
+_status() { write-status.sh "$@" 2>/dev/null || true; }
+
+# On unexpected error, mark status as failed
+trap '_status phase "error" "Bootstrap failed unexpectedly. Check container logs."' ERR
+
 usage() {
   cat <<EOF
 
@@ -67,15 +73,25 @@ load_config() {
   [[ -f "$CLUSTER_CONFIG" ]] || die "Cluster config not found: $CLUSTER_CONFIG"
   log "Loading config: $CLUSTER_CONFIG"
 
-  export BOOTSTRAP_IP=$(jq -r '.bootstrap.ip' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export CLUSTER_NAME=$(jq -r '.cluster.name' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export CONTROL_PLANE_VIP=$(jq -r '.cluster.control_plane_vip' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export POD_SUBNET=$(jq -r '.cluster.pod_subnet // "10.244.0.0/16"' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export SERVICE_SUBNET=$(jq -r '.cluster.service_subnet // "10.96.0.0/12"' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export K8S_VERSION=$(jq -r '.cluster.k8s_version // "v1.31.0"' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export FLATCAR_VERSION=$(jq -r '.cluster.flatcar_version // env.FLATCAR_VERSION' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export SSH_AUTHORIZED_KEY=$(jq -r '.cluster.ssh_authorized_key' <(yq eval -o json "$CLUSTER_CONFIG"))
-  export KUBEADM_TOKEN=$(jq -r '.cluster.kubeadm_token // ""' <(yq eval -o json "$CLUSTER_CONFIG"))
+  local _cfg
+  _cfg=$(yq eval -o json "$CLUSTER_CONFIG")
+
+  export BOOTSTRAP_IP=$(echo "$_cfg"         | jq -r '.bootstrap.ip')
+  export BOOTSTRAP_IFACE=$(echo "$_cfg"      | jq -r '.bootstrap.iface // ""')
+  export CLUSTER_NAME=$(echo "$_cfg"         | jq -r '.cluster.name')
+  export CONTROL_PLANE_VIP=$(echo "$_cfg"    | jq -r '.cluster.control_plane_vip')
+  export POD_SUBNET=$(echo "$_cfg"           | jq -r '.cluster.pod_subnet // "10.244.0.0/16"')
+  export SERVICE_SUBNET=$(echo "$_cfg"       | jq -r '.cluster.service_subnet // "10.96.0.0/12"')
+  export K8S_VERSION=$(echo "$_cfg"          | jq -r '.cluster.k8s_version // "v1.31.0"')
+  export FLATCAR_VERSION=$(echo "$_cfg"      | jq -r '.cluster.flatcar_version // env.FLATCAR_VERSION')
+  # Support both list and singular SSH key forms
+  export SSH_AUTHORIZED_KEYS=$(echo "$_cfg" | jq -r '
+    if (.cluster.ssh_authorized_keys | type) == "array" then
+      .cluster.ssh_authorized_keys | join(", ")
+    else
+      (.cluster.ssh_authorized_key // "")
+    end')
+  export KUBEADM_TOKEN=$(echo "$_cfg"        | jq -r '.cluster.kubeadm_token // ""')
 
   # Generate a token if not provided
   if [[ -z "$KUBEADM_TOKEN" ]]; then
@@ -138,7 +154,6 @@ cmd_serve() {
   log "  Matchbox: http://${BOOTSTRAP_IP:-0.0.0.0}:8080"
   log "  dnsmasq PID: $DNSMASQ_PID"
 
-  # Trap shutdown
   trap "log 'Shutting down...'; kill $MATCHBOX_PID $DNSMASQ_PID 2>/dev/null; exit 0" SIGTERM SIGINT
 
   wait $MATCHBOX_PID $DNSMASQ_PID
@@ -167,12 +182,16 @@ cmd_init() {
   log " Initializing cluster: $CLUSTER_NAME"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+  # Initialize status file with node list + addon list
+  _status init "generating" "Validating and generating cluster configs..."
+
   cmd_validate
   cmd_generate
 
+  _status phase "serving" "PXE boot services running. Power on your nodes."
+
   log ""
   log "Starting PXE boot services..."
-  # Start matchbox + dnsmasq in background for this run
   matchbox \
     -address=0.0.0.0:8080 \
     -assets-path=/var/lib/matchbox/assets \
@@ -193,13 +212,15 @@ cmd_init() {
   log " 3. Copy the join commands from kubeadm output"
   log " 4. Power on worker nodes"
   log ""
+
+  _status phase "waiting" "Waiting for nodes to PXE boot and join the cluster..."
   log "Waiting for cluster to become healthy..."
 
-  # Wait for cluster (polls API server, installs Flannel CNI, waits for Ready)
   wait-for-cluster.sh "$CONTROL_PLANE_VIP"
 
-  # Install platform add-ons (cert-manager, MetalLB, Longhorn, Nebraska)
   install-addons.sh
+
+  _status phase "complete" "✓ Cluster is healthy! kubeconfig saved to /output/kubeconfig"
 
   log ""
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

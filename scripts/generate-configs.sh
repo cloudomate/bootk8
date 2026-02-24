@@ -24,7 +24,14 @@ POD_SUBNET=$(echo "$CLUSTER_JSON"          | jq -r '.cluster.pod_subnet // "10.2
 SERVICE_SUBNET=$(echo "$CLUSTER_JSON"      | jq -r '.cluster.service_subnet // "10.96.0.0/12"')
 K8S_VERSION=$(echo "$CLUSTER_JSON"         | jq -r '.cluster.k8s_version // "v1.31.0"')
 FLATCAR_VERSION=$(echo "$CLUSTER_JSON"     | jq -r '.cluster.flatcar_version // env.FLATCAR_VERSION')
-SSH_KEY=$(echo "$CLUSTER_JSON"             | jq -r '.cluster.ssh_authorized_key')
+# Support both ssh_authorized_keys (list) and ssh_authorized_key (singular, legacy)
+SSH_KEYS_YAML=$(echo "$CLUSTER_JSON" | jq -r '
+  (if (.cluster.ssh_authorized_keys | type) == "array" then
+    .cluster.ssh_authorized_keys
+  elif (.cluster.ssh_authorized_key // "") != "" then
+    [.cluster.ssh_authorized_key]
+  else [] end) |
+  .[] | "        - \"\(.)\"" ')
 KUBEADM_TOKEN="${KUBEADM_TOKEN:-$(generate-token.sh)}"
 
 # ─── Add-on configuration ─────────────────────────────────────────
@@ -38,9 +45,44 @@ else
   FLATCAR_UPDATE_SERVER="https://public.update.flatcar-linux.net/v1/update/"
 fi
 
+# ─── dnsmasq DHCP mode ────────────────────────────────────────────
+# bootstrap.dhcp_range in cluster.yaml switches to full DHCP mode (for labs).
+# In proxy mode (default), an existing DHCP server assigns IPs.
+# In full mode, the bootstrap container is the sole DHCP server.
+
+LAB_DHCP_RANGE=$(echo "$CLUSTER_JSON" | jq -r '.bootstrap.dhcp_range // ""')
+
+if [[ -n "$LAB_DHCP_RANGE" ]]; then
+  DNSMASQ_DHCP_RANGE="$LAB_DHCP_RANGE"
+  DNSMASQ_DHCP_HOSTS=$(echo "$CLUSTER_JSON" | jq -r '
+    [(.controllers // [])[], (.workers // [])[]] |
+    .[] | "dhcp-host=\(.mac),\(.name),\(.ip)"
+  ')
+  log "dnsmasq: full DHCP mode — range=$LAB_DHCP_RANGE"
+else
+  DNSMASQ_DHCP_RANGE="${BOOTSTRAP_IP},proxy"
+  DNSMASQ_DHCP_HOSTS=""
+  log "dnsmasq: proxy DHCP mode"
+fi
+
+# Auto-detect network interface if not provided by caller
+if [[ -z "${BOOTSTRAP_IFACE:-}" ]]; then
+  BOOTSTRAP_IFACE=$(ip -j addr 2>/dev/null \
+    | jq -r --arg ip "$BOOTSTRAP_IP" \
+        '.[] | select(.addr_info[]?.local == $ip) | .ifname' \
+    | head -1 || echo "")
+  [[ -n "$BOOTSTRAP_IFACE" ]] && log "dnsmasq: interface=$BOOTSTRAP_IFACE (auto-detected)"
+fi
+
 export BOOTSTRAP_IP CLUSTER_NAME CONTROL_PLANE_VIP POD_SUBNET \
-       SERVICE_SUBNET K8S_VERSION FLATCAR_VERSION SSH_KEY KUBEADM_TOKEN \
-       ADDON_NEBRASKA_ENABLED ADDON_NEBRASKA_IP FLATCAR_UPDATE_SERVER
+       SERVICE_SUBNET K8S_VERSION FLATCAR_VERSION SSH_KEYS_YAML KUBEADM_TOKEN \
+       ADDON_NEBRASKA_ENABLED ADDON_NEBRASKA_IP FLATCAR_UPDATE_SERVER \
+       BOOTSTRAP_IFACE DNSMASQ_DHCP_RANGE DNSMASQ_DHCP_HOSTS
+
+# ─── Ensure output directories exist ─────────────────────────────
+mkdir -p "${MATCHBOX_DIR}/profiles" \
+         "${MATCHBOX_DIR}/groups" \
+         "${MATCHBOX_DIR}/ignition"
 
 # ─── Matchbox profiles ────────────────────────────────────────────
 log "Generating Matchbox profiles..."

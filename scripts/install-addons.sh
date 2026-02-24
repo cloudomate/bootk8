@@ -19,6 +19,7 @@ export KUBECONFIG
 log()  { echo "[addons] $*"; }
 err()  { echo "[addons] ERROR: $*" >&2; }
 die()  { err "$*"; exit 1; }
+_status() { write-status.sh "$@" 2>/dev/null || true; }
 
 [[ -f "$KUBECONFIG" ]] || die "Kubeconfig not found: $KUBECONFIG"
 
@@ -33,6 +34,7 @@ wait_rollout() {
 # ── 1. Cert-Manager ───────────────────────────────────────────────
 install_cert_manager() {
   log "━━ Installing cert-manager ${ADDON_CERT_MANAGER_VERSION}..."
+  _status addon "cert-manager" "deploying" "Installing cert-manager..."
 
   kube apply -f "${MANIFESTS_DIR}/cert-manager.yaml"
 
@@ -48,12 +50,14 @@ install_cert_manager() {
 
   # Self-signed ClusterIssuer
   envsubst < "${TEMPLATES_DIR}/cert-manager-issuer.yaml.tmpl" | kube apply -f -
+  _status addon "cert-manager" "ready" "cert-manager ready"
   log "✓ cert-manager ready — ClusterIssuer 'selfsigned' created"
 }
 
 # ── 2. MetalLB ────────────────────────────────────────────────────
 install_metallb() {
   log "━━ Installing MetalLB ${ADDON_METALLB_VERSION}..."
+  _status addon "metallb" "deploying" "Installing MetalLB..."
 
   kube apply -f "${MANIFESTS_DIR}/metallb-native.yaml"
 
@@ -67,12 +71,14 @@ install_metallb() {
 
   # Apply IP pool + L2 advertisement
   envsubst < "${TEMPLATES_DIR}/metallb-config.yaml.tmpl" | kube apply -f -
+  _status addon "metallb" "ready" "MetalLB ready — pool: ${ADDON_METALLB_IP_POOL}"
   log "✓ MetalLB ready — IP pool: ${ADDON_METALLB_IP_POOL}"
 }
 
 # ── 3. Rook-Ceph ──────────────────────────────────────────────────
 install_rook_ceph() {
   log "━━ Installing Rook-Ceph ${ADDON_ROOK_CEPH_VERSION}..."
+  _status addon "rook-ceph" "deploying" "Installing Rook-Ceph operator..."
 
   # Step 1: CRDs + common RBAC + operator
   kube apply -f "${MANIFESTS_DIR}/rook-ceph-crds.yaml"
@@ -86,10 +92,12 @@ install_rook_ceph() {
 
   # Step 3: Wait for cluster health — poll ceph status via toolbox
   log "  Waiting for Ceph cluster to reach HEALTH_OK (up to 15m)..."
+  _status addon "rook-ceph" "deploying" "Waiting for Ceph HEALTH_OK..."
   local deadline=$(( $(date +%s) + 900 ))
   until kube -n rook-ceph exec deploy/rook-ceph-tools -- ceph status 2>/dev/null \
       | grep -q "HEALTH_OK"; do
     if [[ $(date +%s) -gt $deadline ]]; then
+      _status addon "rook-ceph" "error" "Ceph did not reach HEALTH_OK in 15m"
       err "Ceph cluster did not reach HEALTH_OK within 15 minutes"
       kube -n rook-ceph exec deploy/rook-ceph-tools -- ceph status || true
       exit 1
@@ -101,6 +109,7 @@ install_rook_ceph() {
   # Step 4: Apply CephBlockPool + RBD StorageClass (set as cluster default)
   envsubst < "${TEMPLATES_DIR}/rook-ceph-storageclass.yaml.tmpl" | kube apply -f -
 
+  _status addon "rook-ceph" "ready" "Rook-Ceph ready — StorageClass 'rook-ceph-block' default"
   log "✓ Rook-Ceph ready — StorageClass 'rook-ceph-block' set as cluster default"
 }
 
